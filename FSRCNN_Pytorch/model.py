@@ -12,7 +12,7 @@ class logger:
 class FSRCNN:
     def __init__(self, scale, device):
         self.device = device
-        self.model = FSRCNN_model(scale).to(device)
+        self.model = torch.compile(FSRCNN_model(scale).to(device))
         self.optimizer = None
         self.loss =  None
         self.metric = None
@@ -33,14 +33,18 @@ class FSRCNN:
             return
         self.ckpt_man = torch.load(ckpt_path)
         self.optimizer.load_state_dict(self.ckpt_man['optimizer'])
-        self.model.load_state_dict(self.ckpt_man['model'])
+        target = self.model._orig_mod if hasattr(self.model, '_orig_mod') else self.model
+        target.load_state_dict(self.ckpt_man['model'])
 
     def load_weights(self, filepath):
-        self.model.load_state_dict(torch.load(filepath, map_location=torch.device(self.device)))
+        state_dict = torch.load(filepath, map_location=torch.device(self.device))
+        target = self.model._orig_mod if hasattr(self.model, '_orig_mod') else self.model
+        target.load_state_dict(state_dict)
 
     def predict(self, lr):
         self.model.train(False)
-        sr = self.model(lr)
+        with torch.no_grad(), torch.autocast(device_type='cuda', enabled=self.device == 'cuda'):
+            sr = self.model(lr)
         return sr
 
     def evaluate(self, dataset, batch_size=64):
