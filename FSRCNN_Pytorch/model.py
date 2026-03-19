@@ -1,4 +1,5 @@
 import os
+import math
 from FSRCNN_Pytorch.neuralnet import FSRCNN_model
 from FSRCNN_Pytorch.utils.common import exists, tensor2numpy
 import torch
@@ -48,20 +49,19 @@ class FSRCNN:
         return sr
 
     def evaluate(self, dataset, batch_size=64):
-        losses, metrics = [], []
+        n_batches = math.ceil(dataset.data.shape[0] / batch_size)
+        losses = torch.empty(n_batches, device=self.device)
+        metrics = torch.empty(n_batches, device=self.device)
+        idx = 0
         isEnd = False
-        while isEnd == False:
+        while not isEnd:
             lr, hr, isEnd = dataset.get_batch(batch_size, shuffle_each_epoch=False)
             lr, hr = lr.to(self.device), hr.to(self.device)
             sr = self.predict(lr)
-            loss = self.loss(hr, sr)
-            metric = self.metric(hr, sr)
-            losses.append(tensor2numpy(loss))
-            metrics.append(tensor2numpy(metric))
-
-        metric = np.mean(metrics)
-        loss = np.mean(losses)
-        return loss, metric
+            losses[idx] = self.loss(hr, sr)
+            metrics[idx] = self.metric(hr, sr)
+            idx += 1
+        return losses.mean().item(), metrics.mean().item()
 
     def train(self, train_set, valid_set, batch_size, steps, save_every=1,
               save_best_only=False, save_log=False, log_dir=None):
@@ -89,18 +89,20 @@ class FSRCNN:
             prev_loss, _ = self.evaluate(valid_set)
             self.load_checkpoint(self.ckpt_path)
 
-        loss_buffer = []
-        metric_buffer = []
+        loss_buffer = np.empty(save_every, dtype=np.float32)
+        metric_buffer = np.empty(save_every, dtype=np.float32)
+        buf_idx = 0
         while cur_step < max_steps:
             cur_step += 1
             lr, hr, _ = train_set.get_batch(batch_size)
             loss, metric = self.train_step(lr, hr)
-            loss_buffer.append(tensor2numpy(loss))
-            metric_buffer.append(tensor2numpy(metric))
+            loss_buffer[buf_idx] = tensor2numpy(loss)
+            metric_buffer[buf_idx] = tensor2numpy(metric)
+            buf_idx += 1
 
             if (cur_step % save_every == 0) or (cur_step >= max_steps):
-                loss = np.mean(loss_buffer)
-                metric = np.mean(metric_buffer)
+                loss = np.mean(loss_buffer[:buf_idx])
+                metric = np.mean(metric_buffer[:buf_idx])
                 val_loss, val_metric = self.evaluate(valid_set)
                 print(f"Step {cur_step}/{max_steps}",
                       f"- loss: {loss:.7f}",
@@ -112,9 +114,8 @@ class FSRCNN:
                     dict_logger["metric"].values.append(metric)
                     dict_logger["val_loss"].values.append(val_loss)
                     dict_logger["val_metric"].values.append(val_metric)
-                
-                loss_buffer = []
-                metric_buffer = []
+
+                buf_idx = 0
                 torch.save({'step': cur_step,
                             'model': self.model.state_dict(),
                             'optimizer': self.optimizer.state_dict()
