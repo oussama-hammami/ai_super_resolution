@@ -40,7 +40,7 @@ def ycbcr2rgb(src):
     Cb = src[1]
     Cr = src[2]
 
-    rgb = torch.zeros(size=src.shape)
+    rgb = torch.zeros(size=src.shape, device=src.device)
     # *Intel IPP
     # rgb[0] = 1.164 * (Y - 16) + 1.596 * (Cr - 128)
     # rgb[1] = 1.164 * (Y - 16) - 0.813 * (Cr - 128) - 0.392 * (Cb - 128)

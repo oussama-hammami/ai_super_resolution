@@ -1,4 +1,5 @@
 from FSRCNN_Pytorch.utils.common import *
+from FSRCNN_Pytorch.utils.display import display_image_gl
 from FSRCNN_Pytorch.model import FSRCNN
 import argparse
 
@@ -52,7 +53,8 @@ def main():
     sr_image = sr_image.type(torch.uint8)
     sr_image = ycbcr2rgb(sr_image)
 
-    write_image("sr.png", sr_image)
+    write_image("sr.png", sr_image.cpu())
+    display_image_gl(sr_image)
 
 if __name__ == "__main__":
     main()
