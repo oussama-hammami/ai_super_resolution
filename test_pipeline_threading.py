@@ -9,7 +9,7 @@ import torch
 import numpy as np
 import threading
 
-BATCH_SIZE = 4
+BATCH_SIZE = 2
 
 stop_event = threading.Event()
 
@@ -56,8 +56,22 @@ def preprocess_frames(raw_queue, q1):
 
 
 # -----------------------------------------------------------
-# Thread 3: batch inference, put raw GPU tensors to q2
+# Thread 3: batch inference + GPU post-process, put HWC BGR GPU tensors to q2
 # -----------------------------------------------------------
+def infer_batch(batch, q2, model):
+    stacked = torch.cat(batch, dim=0)
+    with torch.no_grad():
+        sr_batch = model.predict(stacked)
+        for i in range(sr_batch.shape[0]):
+            sr_image = denorm01(sr_batch[i])
+            sr_image = sr_image.type(torch.uint8)
+            sr_image = ycbcr2rgb(sr_image)                         # YCbCr -> RGB
+            # RGB -> BGR and CHW -> HWC on the GPU, so the download is already cv2 layout
+            sr_image = sr_image[[2, 1, 0]].permute(1, 2, 0).contiguous()
+            q2.put(sr_image)
+    batch.clear()
+
+
 def upscale_frames(q1, q2, model):
     batch = []
     while True:
@@ -66,12 +80,7 @@ def upscale_frames(q1, q2, model):
         if lr_image is None:
             # flush remaining batch
             if batch:
-                stacked = torch.cat(batch, dim=0)
-                with torch.no_grad():
-                    sr_batch = model.predict(stacked)
-                for i in range(sr_batch.shape[0]):
-                    q2.put(sr_batch[i])
-                batch.clear()
+                infer_batch(batch, q2, model)
             q2.put(None)
             q1.task_done()
             break
@@ -80,32 +89,26 @@ def upscale_frames(q1, q2, model):
         q1.task_done()
 
         if len(batch) >= BATCH_SIZE:
-            stacked = torch.cat(batch, dim=0)
-            with torch.no_grad():
-                sr_batch = model.predict(stacked)
-            for i in range(sr_batch.shape[0]):
-                q2.put(sr_batch[i])
-            batch.clear()
+            infer_batch(batch, q2, model)
 
 
 # -----------------------------------------------------------
-# Thread 4: post-process + display
+# Thread 4: download + display
 # -----------------------------------------------------------
 def display_frames(q2):
     prev_time = time.time()
+    host_buffer = None
     while True:
         sr_image = q2.get()
         if sr_image is None:
             q2.task_done()
             break
 
-        # post-process (moved out of inference thread)
-        sr_image = denorm01(sr_image)
-        sr_image = sr_image.type(torch.uint8)
-        sr_image = ycbcr2rgb(sr_image)               # YCbCr -> RGB
-        sr_image = sr_image.cpu().detach().numpy()
-        sr_image = np.transpose(sr_image, (1, 2, 0))
-        sr_image = sr_image[:, :, ::-1].copy()        # RGB -> BGR for cv2
+        # single pinned host buffer, allocated once and reused every frame
+        if host_buffer is None:
+            host_buffer = torch.empty(sr_image.shape, dtype=torch.uint8, pin_memory=True)
+        host_buffer.copy_(sr_image)
+        sr_image = host_buffer.numpy()
 
         cur_time = time.time()
         fps = 1.0 / (cur_time - prev_time)

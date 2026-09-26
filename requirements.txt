@@ -1,0 +1,31 @@
+# Runtime requirements for the FSRCNN real-time super-resolution pipeline.
+#
+# Install (Linux, NVIDIA GPU):
+#   python -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# PyTorch is pulled from the CUDA 12.8 wheel index so it runs on the GPU
+# (torch.compile + fp16 inference). Triton, used by torch.compile, ships with
+# these Linux wheels. Requires an NVIDIA driver >= 570.
+#
+# System packages (not pip-installable): torch.compile/Triton builds C helpers
+# at first run and fails with "Failed to find C compiler" without them:
+#   sudo apt install build-essential python3-dev   # e.g. python3.14-dev
+# Or run without compile: TORCH_COMPILE_DISABLE=1 python test_pipeline_threading.py
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+# --- Deep learning ---
+torch>=2.5
+torchvision>=0.20
+numpy>=1.26
+
+# --- Video I/O & fallback display (cv2.VideoCapture / cv2.imshow) ---
+# Use the GUI build, not opencv-python-headless: imshow needs a window backend.
+opencv-python>=4.9
+
+# --- Zero-copy GPU -> OpenGL display (FSRCNN_Pytorch/utils/display.py) ---
+glfw>=2.7
+PyOpenGL>=3.1.7
+# `from cuda import cudart` is the legacy cuda-python API, removed in 13.x.
+cuda-python>=12.4,<13
+ 
