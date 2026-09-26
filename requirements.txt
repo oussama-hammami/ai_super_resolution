@@ -26,6 +26,6 @@ opencv-python>=4.9
 # --- Zero-copy GPU -> OpenGL display (FSRCNN_Pytorch/utils/display.py) ---
 glfw>=2.7
 PyOpenGL>=3.1.7
-# `from cuda import cudart` is the legacy cuda-python API, removed in 13.x.
-cuda-python>=12.4,<13
+# CUDA-GL interop via cuda.bindings.runtime (available from 12.6).
+cuda-python>=12.6
  

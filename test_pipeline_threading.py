@@ -1,6 +1,6 @@
-import cv2
 import time
 from FSRCNN_Pytorch.utils.common import *
+from FSRCNN_Pytorch.utils.display import GLDisplay
 import config
 from read_video import read_video_from_file, calculate_fps
 from prep_sr_model import prepare_sr_model, run_inferance
@@ -56,7 +56,7 @@ def preprocess_frames(raw_queue, q1):
 
 
 # -----------------------------------------------------------
-# Thread 3: batch inference + GPU post-process, put HWC BGR GPU tensors to q2
+# Thread 3: batch inference + GPU post-process, put HWC RGB GPU tensors to q2
 # -----------------------------------------------------------
 def infer_batch(batch, q2, model):
     stacked = torch.cat(batch, dim=0)
@@ -66,8 +66,8 @@ def infer_batch(batch, q2, model):
             sr_image = denorm01(sr_batch[i])
             sr_image = sr_image.type(torch.uint8)
             sr_image = ycbcr2rgb(sr_image)                         # YCbCr -> RGB
-            # RGB -> BGR and CHW -> HWC on the GPU, so the download is already cv2 layout
-            sr_image = sr_image[[2, 1, 0]].permute(1, 2, 0).contiguous()
+            # CHW -> HWC contiguous, the layout the OpenGL PBO expects
+            sr_image = sr_image.permute(1, 2, 0).contiguous()
             q2.put(sr_image)
     batch.clear()
 
@@ -93,34 +93,47 @@ def upscale_frames(q1, q2, model):
 
 
 # -----------------------------------------------------------
-# Thread 4: download + display
+# Thread 4: display straight from the GPU (CUDA-GL interop, no download)
 # -----------------------------------------------------------
+WARMUP_FRAMES = 30   # excluded from the average FPS
+
+
 def display_frames(q2):
-    prev_time = time.time()
-    host_buffer = None
+    display = None   # created here: the GL context belongs to this thread
+    frame_count = 0
+    title_frames, title_time = 0, time.time()
     while True:
         sr_image = q2.get()
         if sr_image is None:
             q2.task_done()
             break
-
-        # single pinned host buffer, allocated once and reused every frame
-        if host_buffer is None:
-            host_buffer = torch.empty(sr_image.shape, dtype=torch.uint8, pin_memory=True)
-        host_buffer.copy_(sr_image)
-        sr_image = host_buffer.numpy()
-
-        cur_time = time.time()
-        fps = 1.0 / (cur_time - prev_time)
-        prev_time = cur_time
-        cv2.putText(sr_image, f"FPS: {fps:.1f}", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        cv2.imshow("video_frame", sr_image)
-        if cv2.pollKey() & 0xFF == ord('q'):
-            stop_event.set()
+        # after a stop, keep draining so upstream threads never block on put()
+        if stop_event.is_set():
             q2.task_done()
-            break
+            continue
+
+        if display is None:
+            display = GLDisplay(sr_image.shape[0], sr_image.shape[1])
+        display.show(sr_image)
+
+        frame_count += 1
+        if frame_count == WARMUP_FRAMES:
+            start_time = time.time()
+        title_frames += 1
+        now = time.time()
+        if now - title_time >= 0.5:
+            display.set_title(f"Super Resolution - FPS: {title_frames / (now - title_time):.1f}")
+            title_frames, title_time = 0, now
+
+        if display.should_close():
+            stop_event.set()
         q2.task_done()
+
+    if frame_count > WARMUP_FRAMES:
+        avg_fps = (frame_count - WARMUP_FRAMES) / (time.time() - start_time)
+        print(f"Average FPS: {avg_fps:.1f} over {frame_count} frames", flush=True)
+    if display is not None:
+        display.close()
 
 
 raw_frames   = Queue(maxsize=30)
@@ -147,4 +160,3 @@ inference_thread.join()
 display_thread.join()
 
 captured.release()
-cv2.destroyAllWindows()
